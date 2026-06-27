@@ -1,0 +1,222 @@
+#!/usr/bin/env ruby
+# add-path-comments — add file path comments to TypeScript/TSX, Rust, and Python projects
+
+VERSION = "1.0.0"
+
+# ── Global excludes (apply to all project types) ─────────────────────────────
+GLOBAL_EXCLUDE_DIRS = [
+  "prisma",
+  "public",
+  ".next",
+  "node_modules",
+  "target",
+  ".venv",
+  "__pycache__",
+  ".mypy_cache",
+  "dist",
+  "build",
+  ".ruff_cache"
+]
+
+GLOBAL_EXCLUDE_PATH_SEGMENTS = [
+  "/components/ui/"
+]
+
+# ── Config per project type ──────────────────────────────────────────────────
+CONFIGS = {
+  "ts" => {
+    "extensions" => ["*.ts", "*.tsx"],
+    "comment" => "//",
+    "exclude_files" => [
+      "next-env.d.ts", "tsconfig.json", "tsconfig.tsbuildinfo",
+      "tailwind.config.ts", "vitest.config.ts", "postcss.config.mjs",
+      "eslint.config.mjs", "components.json", "next.config.ts"
+    ]
+  },
+  "rust" => {
+    "extensions" => ["*.rs"],
+    "comment" => "//",
+    "exclude_files" => []
+  },
+  "python" => {
+    "extensions" => ["*.py"],
+    "comment" => "#",
+    "exclude_files" => ["__init__.py"]
+  }
+}
+
+MARKERS = {
+  "ts" => ["package.json"],
+  "rust" => ["Cargo.toml"],
+  "python" => ["pyproject.toml", "uv.lock"]
+}
+
+# ── Command line flags ────────────────────────────────────────────────────────
+DRY_RUN = ARGV.include?("-d") || ARGV.include?("--dry-run")
+HELP = ARGV.include?("-h") || ARGV.include?("--help")
+VERSION_FLAG = ARGV.include?("-v") || ARGV.include?("--version")
+
+def usage
+  puts ""
+  puts "add-path-comments v#{VERSION} — add file path comments to projects"
+  puts ""
+  puts "Usage:"
+  puts "  add-path-comments [options] [path]"
+  puts ""
+  puts "Options:"
+  puts "  -d, --dry-run    Show what would be added without modifying files"
+  puts "  -v, --version    Print version"
+  puts "  -h, --help       Show this help message"
+  puts ""
+end
+
+if HELP
+  usage
+  exit 0
+elsif VERSION_FLAG
+  puts "add-path-comments v#{VERSION}"
+  exit 0
+end
+
+# Filter out options to find target path
+args = ARGV.reject { |arg| arg.start_with?("-") }
+repo_root_path = args.empty? ? Dir.pwd : args[0]
+repo_root = File.expand_path(repo_root_path)
+
+if !Dir.exist?(repo_root)
+  puts "Error: Directory does not exist: #{repo_root_path}"
+  exit 1
+end
+
+# ── Project discovery ─────────────────────────────────────────────────────────
+def find_projects(root)
+  projects = []
+  found_types = []
+
+  # Check root directory itself
+  MARKERS.each do |ptype, markers|
+    if markers.any? { |m| File.exist?(File.join(root, m)) }
+      projects << [root, ptype]
+      found_types << ptype
+    end
+  end
+
+  # Check immediate subdirectories only, sorted alphabetically
+  Dir.glob(File.join(root, "*")).sort.each do |subdir|
+    next unless File.directory?(subdir)
+    name = File.basename(subdir)
+    next if name.start_with?(".")
+    next if GLOBAL_EXCLUDE_DIRS.include?(name)
+
+    MARKERS.each do |ptype, markers|
+      if markers.any? { |m| File.exist?(File.join(subdir, m)) }
+        projects << [subdir, ptype]
+        break
+      end
+    end
+  end
+
+  projects
+end
+
+# ── Core logic ────────────────────────────────────────────────────────────────
+def should_process?(file_path, config)
+  file_str = file_path
+  filename = File.basename(file_path)
+
+  return false if config["exclude_files"].include?(filename)
+
+  GLOBAL_EXCLUDE_DIRS.each do |d|
+    return false if file_str.include?("/#{d}/")
+  end
+
+  GLOBAL_EXCLUDE_PATH_SEGMENTS.each do |seg|
+    return false if file_str.include?(seg)
+  end
+
+  true
+end
+
+def expected_comment(file_path, repo_root, comment_char)
+  repo_root_parent = File.dirname(repo_root)
+  prefix = repo_root_parent.end_with?("/") ? repo_root_parent : "#{repo_root_parent}/"
+  relative = file_path.sub(/^#{Regexp.escape(prefix)}/, "")
+  "#{comment_char} #{relative}"
+end
+
+def process_file(file_path, repo_root, comment_char)
+  content = File.read(file_path, encoding: "utf-8") rescue nil
+  return unless content
+
+  lines = content.split("\n", -1)
+  expected = expected_comment(file_path, repo_root, comment_char)
+  repo_root_parent = File.dirname(repo_root)
+  parent_name = File.basename(repo_root_parent)
+
+  # Already correct on line 1
+  if lines.any? && lines[0].strip == expected
+    return
+  end
+
+  # Exists somewhere other than line 1
+  lines[1..-1]&.each do |line|
+    stripped = line.strip
+    if stripped == expected || stripped.start_with?("#{comment_char} #{parent_name}/")
+      relative = file_path.sub(/^#{Regexp.escape(repo_root_parent + "/")}/, "")
+      puts "[NOT TOP LINE] #{relative}"
+      return
+    end
+  end
+
+  relative = file_path.sub(/^#{Regexp.escape(repo_root_parent + "/")}/, "")
+
+  if DRY_RUN
+    puts "[dry-run] Would add top-line comment to #{relative}"
+    return
+  end
+
+  # Preserve shebangs
+  if lines.any? && lines[0].start_with?("#!")
+    rest = lines[1..-1] ? lines[1..-1].join("\n") : ""
+    new_content = lines[0] + "\n" + expected + "\n" + rest
+  else
+    new_content = expected + "\n" + content
+  end
+
+  File.write(file_path, new_content, encoding: "utf-8")
+  puts "[ADDED] #{relative}"
+end
+
+# ── Run ───────────────────────────────────────────────────────────────────────
+projects = find_projects(repo_root)
+
+if projects.empty?
+  puts "No recognisable projects found under #{repo_root}"
+  exit 1
+end
+
+projects.each do |project_root, ptype|
+  config = CONFIGS[ptype]
+  repo_root_parent = File.dirname(repo_root)
+  rel = project_root.sub(/^#{Regexp.escape(repo_root_parent + "/")}/, "")
+  puts "\n── #{rel} ({ptype}) ──".gsub("{ptype}", ptype)
+
+  files = []
+  config["extensions"].each do |ext|
+    glob_pattern = File.join(project_root, "**", ext)
+    # Include hidden files in Dir.glob so we match Python's rglob exactly if any exist,
+    # but still exclude dot directories later if needed
+    files.concat(Dir.glob(glob_pattern, File::FNM_DOTMATCH))
+  end
+
+  # Sort files and filter for files only (exclude directories and self/parent references)
+  files.uniq.sort.each do |file_path|
+    next unless File.file?(file_path)
+    # Ignore files in directories starting with dot (e.g. .git) to match Python rglob exclusions
+    # python rglob doesn't automatically exclude dot directories, but find_projects does.
+    # To match Python exactly, we just run should_process?.
+    if should_process?(file_path, config)
+      process_file(file_path, repo_root, config["comment"])
+    end
+  end
+end
