@@ -70,6 +70,36 @@ add-path-comments -h, --help       # Show help message
 
 ---
 
+## Configuration & Customization
+
+`add-path-comments` supports two levels of configuration:
+
+### 1. Local Customization (`.pcrc` or `.pcrc.yaml`)
+
+Place a `.pcrc` file in the root of your repository to override defaults, add specific exclude directories, or force nested sub-projects to be detected:
+
+```yaml
+# .pcrc
+exclude_dirs:
+  - .export
+  - .out
+exclude_files:
+  - webpack.config.js
+projects:
+  - tauri/src-tauri # Force scanning on nested directories
+```
+
+### 2. Contributing to Global Defaults
+
+Global rules (such as default language configurations, extensions, and universal folders like `node_modules` or `.next` to skip) are defined directly within the [add-path-comments](add-path-comments) script.
+
+If you would like to expand language support or add common exclusion defaults:
+1. Locate the `CONFIGS`, `MARKERS`, and `GLOBAL_EXCLUDE_DIRS` constants inside the [add-path-comments](add-path-comments) script.
+2. Add your improvements.
+3. Submit a Pull Request to this repository!
+
+---
+
 ## License
 
 MIT © [Siavosh Zarrasvand](https://github.com/SiavoshZarrasvand)
