@@ -3,19 +3,16 @@
 
 VERSION = "1.0.1"
 
+require 'yaml'
+
 # ── Global excludes (apply to all project types) ─────────────────────────────
 GLOBAL_EXCLUDE_DIRS = [
   "prisma",
   "public",
-  ".next",
   "node_modules",
   "target",
-  ".venv",
-  "__pycache__",
-  ".mypy_cache",
   "dist",
-  "build",
-  ".ruff_cache"
+  "build"
 ]
 
 GLOBAL_EXCLUDE_PATH_SEGMENTS = [
@@ -25,12 +22,14 @@ GLOBAL_EXCLUDE_PATH_SEGMENTS = [
 # ── Config per project type ──────────────────────────────────────────────────
 CONFIGS = {
   "ts" => {
-    "extensions" => ["*.ts", "*.tsx"],
+    "extensions" => ["*.ts", "*.tsx", "*.js", "*.jsx", "*.mjs", "*.cjs"],
     "comment" => "//",
     "exclude_files" => [
       "next-env.d.ts", "tsconfig.json", "tsconfig.tsbuildinfo",
       "tailwind.config.ts", "vitest.config.ts", "postcss.config.mjs",
-      "eslint.config.mjs", "components.json", "next.config.ts"
+      "eslint.config.mjs", "components.json", "next.config.ts",
+      "tailwind.config.js", "postcss.config.js", "next.config.js",
+      "eslint.config.js", "eslint.config.cjs", "webpack.config.js"
     ]
   },
   "rust" => {
@@ -88,31 +87,83 @@ if !Dir.exist?(repo_root)
   exit 1
 end
 
-# ── Project discovery ─────────────────────────────────────────────────────────
-def find_projects(root)
-  projects = []
-  found_types = []
+# ── Load local configuration (.pcrc) ──────────────────────────────────────────
+local_config = {}
+[".pcrc", ".pcrc.yaml", ".pcrc.yml"].each do |filename|
+  config_file = File.join(repo_root, filename)
+  if File.exist?(config_file)
+    begin
+      local_config = YAML.safe_load(File.read(config_file)) || {}
+      break
+    rescue => e
+      puts "Warning: Failed to parse configuration file #{filename}: #{e.message}"
+    end
+  end
+end
 
-  # Check root directory itself
-  MARKERS.each do |ptype, markers|
-    if markers.any? { |m| File.exist?(File.join(root, m)) }
-      projects << [root, ptype]
-      found_types << ptype
+custom_exclude_dirs = [local_config["exclude_dirs"]].flatten.compact
+custom_exclude_files = [local_config["exclude_files"]].flatten.compact
+custom_exclude_path_segments = [local_config["exclude_path_segments"]].flatten.compact
+custom_projects = [local_config["projects"]].flatten.compact
+
+# Merge exclusions
+GLOBAL_EXCLUDE_DIRS.concat(custom_exclude_dirs).uniq!
+GLOBAL_EXCLUDE_PATH_SEGMENTS.concat(custom_exclude_path_segments).uniq!
+
+# ── Project discovery ─────────────────────────────────────────────────────────
+def find_projects(root, custom_projects)
+  projects = []
+
+  # Add custom projects explicitly declared in .pcrc
+  custom_projects.each do |proj_rel_path|
+    proj_abs_path = File.expand_path(File.join(root, proj_rel_path))
+    if Dir.exist?(proj_abs_path)
+      MARKERS.each do |ptype, markers|
+        if markers.any? { |m| File.exist?(File.join(proj_abs_path, m)) }
+          projects << [proj_abs_path, ptype]
+          break
+        end
+      end
     end
   end
 
-  # Check immediate subdirectories only, sorted alphabetically
-  Dir.glob(File.join(root, "*")).sort.each do |subdir|
-    next unless File.directory?(subdir)
-    name = File.basename(subdir)
-    next if name.start_with?(".")
-    next if GLOBAL_EXCLUDE_DIRS.include?(name)
+  # Helper for recursive search up to depth 3
+  search_dir = lambda do |dir, depth|
+    return if depth > 3
+
+    name = File.basename(dir)
+    return if name.start_with?(".")
+    return if GLOBAL_EXCLUDE_DIRS.include?(name)
 
     MARKERS.each do |ptype, markers|
-      if markers.any? { |m| File.exist?(File.join(subdir, m)) }
-        projects << [subdir, ptype]
+      if markers.any? { |m| File.exist?(File.join(dir, m)) }
+        unless projects.any? { |p_root, _| p_root == dir }
+          projects << [dir, ptype]
+        end
         break
       end
+    end
+
+    Dir.glob(File.join(dir, "*")).sort.each do |subdir|
+      if File.directory?(subdir)
+        search_dir.call(subdir, depth + 1)
+      end
+    end
+  end
+
+  # Check root itself
+  MARKERS.each do |ptype, markers|
+    if markers.any? { |m| File.exist?(File.join(root, m)) }
+      unless projects.any? { |p_root, _| p_root == root }
+        projects << [root, ptype]
+      end
+    end
+  end
+
+  # Scan subdirectories recursively (starting depth 2)
+  Dir.glob(File.join(root, "*")).sort.each do |subdir|
+    if File.directory?(subdir)
+      search_dir.call(subdir, 2)
     end
   end
 
@@ -120,16 +171,33 @@ def find_projects(root)
 end
 
 # ── Core logic ────────────────────────────────────────────────────────────────
-def should_process?(file_path, config)
+def should_process?(file_path, config, repo_root, custom_exclude_files)
   file_str = file_path
   filename = File.basename(file_path)
 
+  # Language-specific exclude files
   return false if config["exclude_files"].include?(filename)
 
+  # Custom exclude files from .pcrc
+  return false if custom_exclude_files.include?(filename)
+
+  # Automatic dot-folder exclusion
+  prefix = repo_root.end_with?("/") ? repo_root : "#{repo_root}/"
+  if file_path.start_with?(prefix)
+    relative_to_root = file_path.sub(/^#{Regexp.escape(prefix)}/, "")
+    components = relative_to_root.split("/")
+    dir_components = components[0..-2] || []
+    if dir_components.any? { |c| c.start_with?(".") }
+      return false
+    end
+  end
+
+  # Global directory exclusions
   GLOBAL_EXCLUDE_DIRS.each do |d|
     return false if file_str.include?("/#{d}/")
   end
 
+  # Global segment exclusions
   GLOBAL_EXCLUDE_PATH_SEGMENTS.each do |seg|
     return false if file_str.include?(seg)
   end
@@ -144,7 +212,7 @@ def expected_comment(file_path, repo_root, comment_char)
   "#{comment_char} #{relative}"
 end
 
-def process_file(file_path, repo_root, comment_char)
+def process_file(file_path, repo_root, comment_char, custom_exclude_files)
   content = File.read(file_path, encoding: "utf-8") rescue nil
   return unless content
 
@@ -188,7 +256,7 @@ def process_file(file_path, repo_root, comment_char)
 end
 
 # ── Run ───────────────────────────────────────────────────────────────────────
-projects = find_projects(repo_root)
+projects = find_projects(repo_root, custom_projects)
 
 if projects.empty?
   puts "No recognisable projects found under #{repo_root}"
@@ -204,19 +272,14 @@ projects.each do |project_root, ptype|
   files = []
   config["extensions"].each do |ext|
     glob_pattern = File.join(project_root, "**", ext)
-    # Include hidden files in Dir.glob so we match Python's rglob exactly if any exist,
-    # but still exclude dot directories later if needed
     files.concat(Dir.glob(glob_pattern, File::FNM_DOTMATCH))
   end
 
-  # Sort files and filter for files only (exclude directories and self/parent references)
+  # Sort files and filter for files only
   files.uniq.sort.each do |file_path|
     next unless File.file?(file_path)
-    # Ignore files in directories starting with dot (e.g. .git) to match Python rglob exclusions
-    # python rglob doesn't automatically exclude dot directories, but find_projects does.
-    # To match Python exactly, we just run should_process?.
-    if should_process?(file_path, config)
-      process_file(file_path, repo_root, config["comment"])
+    if should_process?(file_path, config, repo_root, custom_exclude_files)
+      process_file(file_path, repo_root, config["comment"], custom_exclude_files)
     end
   end
 end
