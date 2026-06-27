@@ -1,7 +1,7 @@
 #!/usr/bin/env ruby
 # add-path-comments — add file path comments to TypeScript/TSX, Rust, and Python projects
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 
 # ── Global excludes (apply to all project types) ─────────────────────────────
 GLOBAL_EXCLUDE_DIRS = [
