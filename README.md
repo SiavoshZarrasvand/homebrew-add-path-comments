@@ -11,6 +11,15 @@ For example, a file located at `my-app/app/page.tsx` will receive the comment:
 
 ---
 
+## Why?
+
+When working with agentic AI coding frameworks, having file path comments prepended to files makes a massive difference:
+- **Easier Reasoning**: AI agents can immediately verify exactly which file they are looking at and where it fits in the repository structure.
+- **Smaller Contexts & Less Context-Switching**: AI agents don't have to keep track of complex path maps or constantly ask for path clarifications.
+- **Cost & Speed Efficiency**: You get significantly less token usage, allowing you to get more mileage out of smaller-sized models (like Gemini 1.5 Flash or GPT-4o-mini).
+
+---
+
 ## Install
 
 ```bash
