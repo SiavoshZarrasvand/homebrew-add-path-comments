@@ -2,7 +2,7 @@
 # add-path-comments/add-path-comments
 # add-path-comments — add file path comments to TypeScript/TSX, Rust, and Python projects
 
-VERSION = "1.0.3"
+VERSION = "1.0.4"
 
 require 'yaml'
 
