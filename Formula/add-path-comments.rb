@@ -1,3 +1,4 @@
+# add-path-comments/Formula/add-path-comments.rb
 class AddPathComments < Formula
   desc "Add file path comments to TypeScript/TSX, Rust, and Python projects"
   homepage "https://github.com/SiavoshZarrasvand/homebrew-add-path-comments"

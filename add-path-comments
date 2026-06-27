@@ -1,4 +1,5 @@
 #!/usr/bin/env ruby
+# add-path-comments/add-path-comments
 # add-path-comments — add file path comments to TypeScript/TSX, Rust, and Python projects
 
 VERSION = "1.0.3"
@@ -41,13 +42,25 @@ CONFIGS = {
     "extensions" => ["*.py"],
     "comment" => "#",
     "exclude_files" => ["__init__.py"]
+  },
+  "ruby" => {
+    "extensions" => ["*.rb", "add-path-comments"],
+    "comment" => "#",
+    "exclude_files" => []
+  },
+  "shell" => {
+    "extensions" => ["*.sh", "release.sh", "purgeapp"],
+    "comment" => "#",
+    "exclude_files" => []
   }
 }
 
 MARKERS = {
   "ts" => ["package.json"],
   "rust" => ["Cargo.toml"],
-  "python" => ["pyproject.toml", "uv.lock"]
+  "python" => ["pyproject.toml", "uv.lock"],
+  "ruby" => ["Gemfile", "Rakefile", "Formula"],
+  "shell" => ["release.sh"]
 }
 
 # ── Command line flags ────────────────────────────────────────────────────────
@@ -120,8 +133,9 @@ def find_projects(root, custom_projects)
     if Dir.exist?(proj_abs_path)
       MARKERS.each do |ptype, markers|
         if markers.any? { |m| File.exist?(File.join(proj_abs_path, m)) }
-          projects << [proj_abs_path, ptype]
-          break
+          unless projects.any? { |p_root, p_t| p_root == proj_abs_path && p_t == ptype }
+            projects << [proj_abs_path, ptype]
+          end
         end
       end
     end
@@ -137,10 +151,9 @@ def find_projects(root, custom_projects)
 
     MARKERS.each do |ptype, markers|
       if markers.any? { |m| File.exist?(File.join(dir, m)) }
-        unless projects.any? { |p_root, _| p_root == dir }
+        unless projects.any? { |p_root, p_t| p_root == dir && p_t == ptype }
           projects << [dir, ptype]
         end
-        break
       end
     end
 
@@ -154,7 +167,7 @@ def find_projects(root, custom_projects)
   # Check root itself
   MARKERS.each do |ptype, markers|
     if markers.any? { |m| File.exist?(File.join(root, m)) }
-      unless projects.any? { |p_root, _| p_root == root }
+      unless projects.any? { |p_root, p_t| p_root == root && p_t == ptype }
         projects << [root, ptype]
       end
     end
