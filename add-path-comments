@@ -90,15 +90,28 @@ elsif VERSION_FLAG
   exit 0
 end
 
+def find_repo_root(start_dir)
+  curr = File.expand_path(start_dir)
+  loop do
+    return curr if File.exist?(File.join(curr, ".git"))
+    parent = File.dirname(curr)
+    break if parent == curr
+    curr = parent
+  end
+  start_dir
+end
+
 # Filter out options to find target path
 args = ARGV.reject { |arg| arg.start_with?("-") }
-repo_root_path = args.empty? ? Dir.pwd : args[0]
-repo_root = File.expand_path(repo_root_path)
+target_path = args.empty? ? Dir.pwd : args[0]
+target_dir = File.expand_path(target_path)
 
-if !Dir.exist?(repo_root)
-  puts "Error: Directory does not exist: #{repo_root_path}"
+if !Dir.exist?(target_dir)
+  puts "Error: Directory does not exist: #{target_path}"
   exit 1
 end
+
+repo_root = find_repo_root(target_dir)
 
 # ── Load local configuration (.pcrc) ──────────────────────────────────────────
 local_config = {}
