@@ -1,22 +1,79 @@
 # 📝 add-path-comments
 
-**Automatically add file path comments to TypeScript/TSX, Rust, and Python source files.**
+> **Status: retired.** This tool solved a real problem in the era before agentic
+> CLI tooling. That problem no longer exists in the workflow it was built for.
+> It still works, and `--remove` will cleanly undo it, but there is no reason to
+> adopt it in a new repository.
 
-`add-path-comments` scans a repository for projects (Next.js/TypeScript, Rust, Python), and prepends a top-line comment specifying the relative file path to each source file. 
+`add-path-comments` prepends a comment naming the file's own path to the top of
+every source file in a project:
 
-For example, a file located at `my-app/app/page.tsx` will receive the comment:
 ```tsx
 // my-app/app/page.tsx
 ```
 
 ---
 
-## Why?
+## What it was for
 
-When working with agentic AI coding frameworks, having file path comments prepended to files makes a massive difference:
-- **Easier Reasoning**: AI agents can immediately verify exactly which file they are looking at and where it fits in the repository structure.
-- **Smaller Contexts & Less Context-Switching**: AI agents don't have to keep track of complex path maps or constantly ask for path clarifications.
-- **Cost & Speed Efficiency**: You get significantly less token usage, allowing you to get more mileage out of smaller-sized models (like Gemini 1.5 Flash or GPT-4o-mini).
+Before Claude Code, Codex and the rest, working with an LLM on a codebase meant
+copying files into a chat window by hand. The model received a wall of code with
+no idea where any of it lived. You either prefixed every paste manually, or the
+model guessed — and it guessed wrong often enough to matter, especially in
+repositories with several files sharing a basename (`page.tsx`, `mod.rs`,
+`types.ts`).
+
+Putting the path in the file itself fixed that permanently. Every paste carried
+its own location, and refactors stayed legible because the model could see what
+it was actually editing.
+
+## Why it no longer earns its place
+
+**Agentic tooling already supplies the path.** Every file an agent reads through
+a `Read` or `Grep` tool arrives with its path attached by the harness. The
+comment restates something already in context, so it adds nothing in the case
+that now dominates.
+
+**It does not reduce token usage.** This was the original claim here, and it was
+simply wrong. A comment is tokens like anything else — measured on a real
+codebase, the convention cost about **2,900 tokens across 204 files**. There is
+no mechanism by which a comment at the top of a file makes reasoning about that
+file cheaper.
+
+**A stale path is worse than no path.** The comment cannot fail. Move a file and
+nothing catches the now-incorrect header, which then confidently misinforms the
+next reader — human or model. Later versions of this tool repair that case, but
+needing repair machinery at all says the invariant was fragile.
+
+**Comments are a poor place for reasoning.** If something about a file is worth
+stating, a test that fails when the statement stops being true is worth more
+than a line that silently rots.
+
+---
+
+## Migrating off it
+
+```bash
+add-path-comments --remove          # strip them from the repository
+add-path-comments --remove --check  # exits 1 while any remain
+```
+
+`--remove` only strips comments the tool itself owns — a lone path-shaped token
+matching the file's basename or extension — so prose comments, licence headers
+and shebangs are left alone.
+
+## The one case that survives
+
+Pasting code into a chat by hand still benefits from carrying the path, which is
+what `--stdout` is for. It writes nothing to disk:
+
+```bash
+add-path-comments --stdout lib/orders/build-order-payload.ts | pbcopy
+add-path-comments --stdout lib/orders                          # whole directory
+```
+
+That gets the original benefit without the comments living in the repository at
+all — which is the arrangement that should have existed from the start.
 
 ---
 
@@ -27,62 +84,12 @@ brew tap SiavoshZarrasvand/add-path-comments
 brew install add-path-comments
 ```
 
----
-
 ## Usage
 
-Run the command in your repository root:
-
 ```bash
-add-path-comments
+add-path-comments                    # add comments under the current directory
+add-path-comments /path/to/my-repo   # or a specific directory
 ```
-
-Or target a specific directory:
-
-```bash
-add-path-comments /path/to/my-repo
-```
-
-### Dry Run (Preview Changes)
-
-See what would change without modifying any files:
-
-```bash
-add-path-comments --dry-run
-```
-
-### Check (CI Gate)
-
-Same report as `--dry-run`, but exits `1` if any file has a missing or stale
-path comment. Use it to fail a build when the invariant has drifted:
-
-```bash
-add-path-comments --check || exit 1
-```
-
-### Remove
-
-Strip path comments from a repository:
-
-```bash
-add-path-comments --remove
-```
-
-Combines with the modes above — `--remove --dry-run` previews, and
-`--remove --check` exits `1` while any comment is still present.
-
-### Stdout (Paste Mode)
-
-Print annotated copies without modifying anything on disk. This is the mode to
-use when pasting into an AI chat: the path travels with the snippet, so the
-comment never has to live in the repository.
-
-```bash
-add-path-comments --stdout lib/chart/use-chart-data.ts | pbcopy
-add-path-comments --stdout lib/chart                      # whole directory
-```
-
-Progress output goes to stderr, so stdout stays paste-ready.
 
 ### Options
 
@@ -100,15 +107,16 @@ expects a directory.
 
 ---
 
-## Behavior
+## Behaviour
 
-*   **Preserves Shebangs**: If a file starts with `#!` (like `#!/usr/bin/env python3`), the path comment is inserted on the second line.
-*   **Repairs Stale Comments**: If a file has moved, the outdated path comment is removed and replaced — never stacked underneath the new one. Comments left over from a repo rename are repaired the same way.
+*   **Preserves Shebangs**: If a file starts with `#!`, the path comment is inserted on the second line.
+*   **Repairs Stale Comments**: If a file has moved, the outdated comment is removed and replaced — never stacked underneath the new one. Comments left over from a repo rename are repaired the same way.
 *   **Collapses Duplicates**: A file that has accumulated several path comments ends up with exactly one, on the top line.
-*   **Relocates Misplaced Comments**: A path comment found lower in the file's leading comment block is moved to the top line rather than skipped.
-*   **Leaves Prose Alone**: Only a lone, whitespace-free path token pointing at the same filename or extension is treated as the tool's own. A comment like `// see lib/other.ts for details` is never touched.
-*   **Respects `.gitignore`**: Files git ignores are never modified, so build output (`out/`, `storybook-static/`, …) stays untouched. Falls back to the static exclude list outside a git work tree.
-*   **Ignores Excluded Directories**: Automatically skips folders like `node_modules`, `dist`, `target`, `.next`, `.venv`, and standard UI components (like `/components/ui/`).
+*   **Relocates Misplaced Comments**: A path comment found lower in the leading comment block is moved to the top line.
+*   **Leaves Prose Alone**: Only a lone, whitespace-free path token pointing at the same filename or extension is treated as the tool's own. `// see lib/other.ts for details` is never touched.
+*   **Cleans Up After Itself**: `--remove` also drops the empty separator line left orphaned at the top when the path comment above it goes.
+*   **Respects `.gitignore`**: Ignored files are never modified, so build output stays untouched. Falls back to a static exclude list outside a git work tree.
+*   **Ignores Excluded Directories**: Skips `node_modules`, `dist`, `target`, `.next`, `.venv`, and UI component directories like `/components/ui/`.
 
 ---
 
@@ -120,37 +128,32 @@ ruby test/test_add_path_comments.rb
 
 Each test builds a throwaway project tree, runs the real script against it, and
 asserts on the resulting file contents. No dependencies beyond the Ruby stdlib —
-the tool must stay installable as a single file.
+the tool stays installable as a single file.
 
 ---
 
-## Configuration & Customization
+## Configuration
 
-`add-path-comments` supports two levels of configuration:
+### Local (`.pcrc` or `.pcrc.yaml`)
 
-### 1. Local Customization (`.pcrc` or `.pcrc.yaml`)
-
-Place a `.pcrc` file in the root of your repository to override defaults, add specific exclude directories, or force nested sub-projects to be detected:
+Place a `.pcrc` file in the repository root to override defaults, exclude
+directories, or force nested sub-projects to be detected:
 
 ```yaml
-# .pcrc
 exclude_dirs:
   - .export
   - .out
 exclude_files:
   - webpack.config.js
 projects:
-  - tauri/src-tauri # Force scanning on nested directories
+  - tauri/src-tauri
 ```
 
-### 2. Contributing to Global Defaults
+### Global defaults
 
-Global rules (such as default language configurations, extensions, and universal folders like `node_modules` or `.next` to skip) are defined directly within the [add-path-comments](add-path-comments) script.
-
-If you would like to expand language support or add common exclusion defaults:
-1. Locate the `CONFIGS`, `MARKERS`, and `GLOBAL_EXCLUDE_DIRS` constants inside the [add-path-comments](add-path-comments) script.
-2. Add your improvements.
-3. Submit a Pull Request to this repository!
+Language configurations, extensions and universally skipped folders are defined
+in the `CONFIGS`, `MARKERS` and `GLOBAL_EXCLUDE_DIRS` constants inside the
+[add-path-comments](add-path-comments) script.
 
 ---
 
