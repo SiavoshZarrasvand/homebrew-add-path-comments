@@ -60,14 +60,43 @@ path comment. Use it to fail a build when the invariant has drifted:
 add-path-comments --check || exit 1
 ```
 
+### Remove
+
+Strip path comments from a repository:
+
+```bash
+add-path-comments --remove
+```
+
+Combines with the modes above — `--remove --dry-run` previews, and
+`--remove --check` exits `1` while any comment is still present.
+
+### Stdout (Paste Mode)
+
+Print annotated copies without modifying anything on disk. This is the mode to
+use when pasting into an AI chat: the path travels with the snippet, so the
+comment never has to live in the repository.
+
+```bash
+add-path-comments --stdout lib/chart/use-chart-data.ts | pbcopy
+add-path-comments --stdout lib/chart                      # whole directory
+```
+
+Progress output goes to stderr, so stdout stays paste-ready.
+
 ### Options
 
 ```bash
+add-path-comments -r, --remove     # Strip path comments instead of adding them
+add-path-comments -s, --stdout     # Print annotated copies, leaving files untouched
 add-path-comments -d, --dry-run    # Preview changes without modifying files
 add-path-comments -c, --check      # Preview, and exit 1 if anything needs fixing
 add-path-comments -v, --version    # Print version
 add-path-comments -h, --help       # Show help message
 ```
+
+A single file may be passed as the target with `--stdout`. Every other mode
+expects a directory.
 
 ---
 
