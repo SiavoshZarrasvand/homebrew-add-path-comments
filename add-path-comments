@@ -303,6 +303,10 @@ def strip_path_comments(lines, comment_char, file_path)
     true
   end.map(&:first)
 
+  if REMOVE && had_comment && kept[insert_at]&.strip == comment_char
+    kept.delete_at(insert_at)
+  end
+
   [kept, insert_at, had_comment]
 end
 

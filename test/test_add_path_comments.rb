@@ -381,6 +381,71 @@ class PathCommentsTest < Minitest::Test
     end
   end
 
+  def test_remove_drops_the_orphaned_separator
+    in_project do |root|
+      write(root, "lib/foo.ts",
+            "// myproj/lib/foo.ts\n//\n// Pure function — no side effects.\nexport const a = 1\n")
+      run_tool(root, "--remove")
+      assert_equal "// Pure function — no side effects.\nexport const a = 1\n",
+                   read(root, "lib/foo.ts")
+    end
+  end
+
+  def test_remove_keeps_separators_between_prose_paragraphs
+    in_project do |root|
+      write(root, "lib/foo.ts",
+            "// myproj/lib/foo.ts\n//\n// First para.\n//\n// Second para.\nexport const a = 1\n")
+      run_tool(root, "--remove")
+      assert_equal "// First para.\n//\n// Second para.\nexport const a = 1\n",
+                   read(root, "lib/foo.ts")
+    end
+  end
+
+  def test_remove_leaves_a_leading_separator_when_there_was_no_path_comment
+    in_project do |root|
+      original = "//\n// Just prose.\nexport const a = 1\n"
+      write(root, "lib/foo.ts", original)
+      run_tool(root, "--remove")
+      assert_equal original, read(root, "lib/foo.ts")
+    end
+  end
+
+  def test_remove_drops_the_separator_beneath_a_shebang
+    in_project do |root|
+      write(root, "release.sh", "#!/bin/sh\n# myproj/release.sh\n#\n# Cuts a release.\necho hi\n")
+      run_tool(root, "--remove")
+      assert_equal "#!/bin/sh\n# Cuts a release.\necho hi\n", read(root, "release.sh")
+    end
+  end
+
+  def test_remove_keeps_a_decorated_separator
+    in_project do |root|
+      write(root, "lib/foo.ts", "// myproj/lib/foo.ts\n// ─────────\nexport const a = 1\n")
+      run_tool(root, "--remove")
+      assert_equal "// ─────────\nexport const a = 1\n", read(root, "lib/foo.ts")
+    end
+  end
+
+  # Add mode strips through the same helper, so it must not start eating the
+  # separator on every run.
+  def test_add_mode_preserves_the_separator
+    in_project do |root|
+      original = "// myproj/lib/foo.ts\n//\n// Pure function.\nexport const a = 1\n"
+      write(root, "lib/foo.ts", original)
+      run_tool(root)
+      assert_equal original, read(root, "lib/foo.ts")
+    end
+  end
+
+  def test_add_mode_repairs_a_stale_comment_without_eating_the_separator
+    in_project do |root|
+      write(root, "lib/foo.ts", "// myproj/lib/OLD.ts\n//\n// Pure function.\nexport const a = 1\n")
+      run_tool(root)
+      assert_equal "// myproj/lib/foo.ts\n//\n// Pure function.\nexport const a = 1\n",
+                   read(root, "lib/foo.ts")
+    end
+  end
+
   # ── Stdout ─────────────────────────────────────────────────────────────────
 
   def test_stdout_prints_annotated_copy_without_touching_the_file
