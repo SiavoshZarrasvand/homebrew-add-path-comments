@@ -38,21 +38,16 @@ that now dominates.
 reason: the header cost about 14 tokens per file, while a misidentified file
 cost a wrong edit, a correction, a re-paste and a retry. Preventing one of those
 paid for the header hundreds of times over, so total consumption genuinely fell
-— most of all in repositories where several files share a basename.
+- most of all in repositories where several files share a basename.
 
 That trade only works while the path is otherwise unknown. Once the harness
 supplies it on every read, the accuracy is already there and the header buys
-nothing, leaving only its standing cost — about **2,900 tokens across 204
-files** on a real codebase. Same convention, same arithmetic, opposite result.
+nothing, leaving only its standing cost.
 
 **A stale path is worse than no path.** The comment cannot fail. Move a file and
 nothing catches the now-incorrect header, which then confidently misinforms the
-next reader — human or model. Later versions of this tool repair that case, but
+next reader - human or model. Later versions of this tool repair that case, but
 needing repair machinery at all says the invariant was fragile.
-
-**Comments are a poor place for reasoning.** If something about a file is worth
-stating, a test that fails when the statement stops being true is worth more
-than a line that silently rots.
 
 ---
 
