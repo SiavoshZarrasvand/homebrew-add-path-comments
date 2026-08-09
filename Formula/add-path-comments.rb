@@ -2,10 +2,10 @@
 class AddPathComments < Formula
   desc "Add file path comments to TypeScript/TSX, Rust, and Python projects"
   homepage "https://github.com/SiavoshZarrasvand/homebrew-add-path-comments"
-  url "https://github.com/SiavoshZarrasvand/homebrew-add-path-comments/archive/refs/tags/v1.0.6.tar.gz"
-  sha256 "4094c613a3de14c3370f4a05de5742af80125ea100575721c166547060bff85a"
+  url "https://github.com/SiavoshZarrasvand/homebrew-add-path-comments/archive/refs/tags/v1.0.7.tar.gz"
+  sha256 "4d34da0045e8f0d507e66cde15b63de9488644e6c4a1506a903fd6d9be993e3a"
   license "MIT"
-  version "1.0.6"
+  version "1.0.7"
 
   depends_on :macos
 
