@@ -34,11 +34,16 @@ a `Read` or `Grep` tool arrives with its path attached by the harness. The
 comment restates something already in context, so it adds nothing in the case
 that now dominates.
 
-**It does not reduce token usage.** This was the original claim here, and it was
-simply wrong. A comment is tokens like anything else — measured on a real
-codebase, the convention cost about **2,900 tokens across 204 files**. There is
-no mechanism by which a comment at the top of a file makes reasoning about that
-file cheaper.
+**The token argument has inverted.** It used to hold, and it held for a good
+reason: the header cost about 14 tokens per file, while a misidentified file
+cost a wrong edit, a correction, a re-paste and a retry. Preventing one of those
+paid for the header hundreds of times over, so total consumption genuinely fell
+— most of all in repositories where several files share a basename.
+
+That trade only works while the path is otherwise unknown. Once the harness
+supplies it on every read, the accuracy is already there and the header buys
+nothing, leaving only its standing cost — about **2,900 tokens across 204
+files** on a real codebase. Same convention, same arithmetic, opposite result.
 
 **A stale path is worse than no path.** The comment cannot fail. Move a file and
 nothing catches the now-incorrect header, which then confidently misinforms the
