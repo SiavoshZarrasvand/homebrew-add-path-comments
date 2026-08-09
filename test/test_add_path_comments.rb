@@ -49,6 +49,11 @@ class PathCommentsTest < Minitest::Test
     [out, status.exitstatus]
   end
 
+  def run_tool_split(target, *flags)
+    out, err, status = Open3.capture3("ruby", SCRIPT, *flags, target)
+    [out, err, status.exitstatus]
+  end
+
   # ── Adding ─────────────────────────────────────────────────────────────────
 
   def test_adds_missing_comment
@@ -288,6 +293,170 @@ class PathCommentsTest < Minitest::Test
       assert_equal 1, out.scan("myproj/tools/mock/index.js").length
       assert_equal "// myproj/tools/mock/index.js\nmodule.exports = 1\n",
                    read(root, "tools/mock/index.js")
+    end
+  end
+
+  # ── Remove ─────────────────────────────────────────────────────────────────
+
+  def test_remove_strips_the_path_comment
+    in_project do |root|
+      write(root, "lib/foo.ts", "// myproj/lib/foo.ts\nexport const a = 1\n")
+      _, code = run_tool(root, "--remove")
+      assert_equal 0, code
+      assert_equal "export const a = 1\n", read(root, "lib/foo.ts")
+    end
+  end
+
+  def test_remove_is_a_no_op_when_there_is_nothing_to_strip
+    in_project do |root|
+      original = "export const a = 1\n"
+      write(root, "lib/foo.ts", original)
+      run_tool(root, "--remove")
+      assert_equal original, read(root, "lib/foo.ts")
+    end
+  end
+
+  def test_remove_leaves_prose_comments_and_shebangs
+    in_project do |root|
+      write(root, "lib/foo.ts", "// myproj/lib/foo.ts\n// see lib/other.ts\nexport const a = 1\n")
+      write(root, "release.sh", "#!/bin/sh\n# myproj/release.sh\necho hi\n")
+      run_tool(root, "--remove")
+      assert_equal "// see lib/other.ts\nexport const a = 1\n", read(root, "lib/foo.ts")
+      assert_equal "#!/bin/sh\necho hi\n", read(root, "release.sh")
+    end
+  end
+
+  def test_remove_strips_stale_comments_too
+    in_project do |root|
+      write(root, "lib/foo.ts", "// myproj/lib/foo.ts\n// oldname/lib/foo.ts\nexport const a = 1\n")
+      run_tool(root, "--remove")
+      assert_equal "export const a = 1\n", read(root, "lib/foo.ts")
+    end
+  end
+
+  def test_remove_does_not_touch_gitignored_files
+    in_project do |root|
+      File.write(File.join(root, ".gitignore"), "out/\n")
+      original = "// myproj/out/bundle.ts\nexport const generated = 1\n"
+      write(root, "out/bundle.ts", original)
+      run_tool(root, "--remove")
+      assert_equal original, read(root, "out/bundle.ts")
+    end
+  end
+
+  def test_remove_dry_run_reports_without_writing
+    in_project do |root|
+      original = "// myproj/lib/foo.ts\nexport const a = 1\n"
+      write(root, "lib/foo.ts", original)
+      out, code = run_tool(root, "--remove", "--dry-run")
+      assert_equal 0, code
+      assert_equal original, read(root, "lib/foo.ts")
+      assert_includes out, "lib/foo.ts"
+    end
+  end
+
+  def test_remove_check_exits_nonzero_while_comments_remain
+    in_project do |root|
+      write(root, "lib/foo.ts", "// myproj/lib/foo.ts\nexport const a = 1\n")
+      _, code = run_tool(root, "--remove", "--check")
+      assert_equal 1, code
+    end
+  end
+
+  def test_remove_check_exits_zero_once_stripped
+    in_project do |root|
+      write(root, "lib/foo.ts", "export const a = 1\n")
+      _, code = run_tool(root, "--remove", "--check")
+      assert_equal 0, code
+    end
+  end
+
+  def test_remove_then_add_round_trips
+    in_project do |root|
+      original = "// myproj/lib/foo.ts\nexport const a = 1\n"
+      write(root, "lib/foo.ts", original)
+      run_tool(root, "--remove")
+      run_tool(root)
+      assert_equal original, read(root, "lib/foo.ts")
+    end
+  end
+
+  # ── Stdout ─────────────────────────────────────────────────────────────────
+
+  def test_stdout_prints_annotated_copy_without_touching_the_file
+    in_project do |root|
+      original = "export const a = 1\n"
+      path = write(root, "lib/foo.ts", original)
+      out, _, code = run_tool_split(path, "--stdout")
+      assert_equal 0, code
+      assert_equal "// myproj/lib/foo.ts\nexport const a = 1\n", out
+      assert_equal original, read(root, "lib/foo.ts")
+    end
+  end
+
+  def test_stdout_does_not_double_prefix_an_annotated_file
+    in_project do |root|
+      original = "// myproj/lib/foo.ts\nexport const a = 1\n"
+      path = write(root, "lib/foo.ts", original)
+      out, _, _ = run_tool_split(path, "--stdout")
+      assert_equal original, out
+    end
+  end
+
+  def test_stdout_corrects_a_stale_comment_in_its_output_only
+    in_project do |root|
+      original = "// myproj/lib/OLD.ts\nexport const a = 1\n"
+      path = write(root, "lib/foo.ts", original)
+      out, _, _ = run_tool_split(path, "--stdout")
+      assert_equal "// myproj/lib/foo.ts\nexport const a = 1\n", out
+      assert_equal original, read(root, "lib/foo.ts")
+    end
+  end
+
+  def test_stdout_emits_every_file_in_a_directory
+    in_project do |root|
+      write(root, "lib/a.ts", "export const a = 1\n")
+      write(root, "lib/b.ts", "export const b = 2\n")
+      out, _, code = run_tool_split(root, "--stdout")
+      assert_equal 0, code
+      assert_includes out, "// myproj/lib/a.ts\nexport const a = 1\n"
+      assert_includes out, "// myproj/lib/b.ts\nexport const b = 2\n"
+      assert_equal "export const a = 1\n", read(root, "lib/a.ts")
+    end
+  end
+
+  def test_stdout_keeps_progress_reporting_off_stdout
+    in_project do |root|
+      write(root, "lib/foo.ts", "export const a = 1\n")
+      out, err, _ = run_tool_split(root, "--stdout")
+      refute_includes out, "──"
+      assert_includes err, "──"
+    end
+  end
+
+  def test_stdout_output_is_stable_across_runs
+    in_project do |root|
+      write(root, "lib/a.ts", "export const a = 1\n")
+      write(root, "lib/b.ts", "export const b = 2\n")
+      first, _, _ = run_tool_split(root, "--stdout")
+      second, _, _ = run_tool_split(root, "--stdout")
+      assert_equal first, second
+    end
+  end
+
+  def test_single_file_target_is_rejected_without_stdout
+    in_project do |root|
+      path = write(root, "lib/foo.ts", "export const a = 1\n")
+      _, _, code = run_tool_split(path)
+      assert_equal 1, code
+    end
+  end
+
+  def test_unsupported_single_file_type_is_rejected
+    in_project do |root|
+      path = write(root, "lib/notes.md", "# notes\n")
+      _, _, code = run_tool_split(path, "--stdout")
+      assert_equal 1, code
     end
   end
 

@@ -66,11 +66,12 @@ MARKERS = {
 # ── Command line flags ────────────────────────────────────────────────────────
 DRY_RUN = ARGV.include?("-d") || ARGV.include?("--dry-run")
 CHECK = ARGV.include?("-c") || ARGV.include?("--check")
+REMOVE = ARGV.include?("-r") || ARGV.include?("--remove")
+STDOUT_MODE = ARGV.include?("-s") || ARGV.include?("--stdout")
 HELP = ARGV.include?("-h") || ARGV.include?("--help")
 VERSION_FLAG = ARGV.include?("-v") || ARGV.include?("--version")
 
-# Neither mode writes; --check additionally exits non-zero so CI can gate on it.
-READ_ONLY = DRY_RUN || CHECK
+READ_ONLY = DRY_RUN || CHECK || STDOUT_MODE
 
 def usage
   puts ""
@@ -80,11 +81,17 @@ def usage
   puts "  add-path-comments [options] [path]"
   puts ""
   puts "Options:"
+  puts "  -r, --remove     Strip path comments instead of adding them"
+  puts "  -s, --stdout     Print annotated copies to stdout, leaving files untouched"
   puts "  -d, --dry-run    Show what would change without modifying files"
   puts "  -c, --check      Like --dry-run, but exits 1 if anything needs fixing"
   puts "  -v, --version    Print version"
   puts "  -h, --help       Show this help message"
   puts ""
+end
+
+def report(message)
+  STDOUT_MODE ? warn(message) : puts(message)
 end
 
 if HELP
@@ -111,12 +118,19 @@ args = ARGV.reject { |arg| arg.start_with?("-") }
 target_path = args.empty? ? Dir.pwd : args[0]
 target_dir = File.expand_path(target_path)
 
-if !Dir.exist?(target_dir)
-  puts "Error: Directory does not exist: #{target_path}"
+single_file = File.file?(target_dir)
+
+if !single_file && !Dir.exist?(target_dir)
+  warn "Error: No such file or directory: #{target_path}"
   exit 1
 end
 
-repo_root = find_repo_root(target_dir)
+if single_file && !STDOUT_MODE
+  warn "Error: a single file target is only supported with --stdout"
+  exit 1
+end
+
+repo_root = find_repo_root(single_file ? File.dirname(target_dir) : target_dir)
 
 # ── Load local configuration (.pcrc) ──────────────────────────────────────────
 local_config = {}
@@ -277,24 +291,10 @@ def header_block_end(lines, start_at, comment_char)
   idx
 end
 
-# Returns true when the file needed a change (whether or not one was written).
-def process_file(file_path, repo_root, comment_char, custom_exclude_files)
-  content = File.read(file_path, encoding: "utf-8") rescue nil
-  return false unless content
-
-  expected = expected_comment(file_path, repo_root, comment_char)
-  repo_root_parent = File.dirname(repo_root)
-  relative = file_path.sub(/^#{Regexp.escape(repo_root_parent + "/")}/, "")
-
-  lines = content.split("\n", -1)
-
-  # A shebang must stay on line 1; the path comment goes directly beneath it.
+def strip_path_comments(lines, comment_char, file_path)
   insert_at = lines.first.to_s.start_with?("#!") ? 1 : 0
   block_end = header_block_end(lines, insert_at, comment_char)
 
-  # Drop every path comment already in the header block, then reinstate exactly
-  # one. This is what repairs moved files: the stale comment is removed rather
-  # than left behind under the new one.
   had_comment = false
   kept = lines.each_with_index.reject do |line, idx|
     next false unless idx >= insert_at && idx < block_end
@@ -303,19 +303,51 @@ def process_file(file_path, repo_root, comment_char, custom_exclude_files)
     true
   end.map(&:first)
 
-  kept.insert(insert_at, expected)
-  new_content = kept.join("\n")
+  [kept, insert_at, had_comment]
+end
+
+def desired_content(file_path, repo_root, comment_char, content)
+  lines = content.split("\n", -1)
+  kept, insert_at, had_comment = strip_path_comments(lines, comment_char, file_path)
+  unless REMOVE
+    kept.insert(insert_at, expected_comment(file_path, repo_root, comment_char))
+  end
+  [kept.join("\n"), had_comment]
+end
+
+# Returns true when the file needed a change (whether or not one was written).
+def process_file(file_path, repo_root, comment_char, custom_exclude_files)
+  content = File.read(file_path, encoding: "utf-8") rescue nil
+  return false unless content
+
+  repo_root_parent = File.dirname(repo_root)
+  relative = file_path.sub(/^#{Regexp.escape(repo_root_parent + "/")}/, "")
+
+  new_content, had_comment = desired_content(file_path, repo_root, comment_char, content)
+
+  if STDOUT_MODE
+    print new_content
+    print "\n" unless new_content.end_with?("\n")
+    return false
+  end
 
   return false if new_content == content
 
+  verb, gerund = if REMOVE
+    ["REMOVED", "remove"]
+  elsif had_comment
+    ["FIXED", "fix"]
+  else
+    ["ADDED", "add"]
+  end
+
   if READ_ONLY
-    label = DRY_RUN ? "dry-run" : "check"
-    puts "[#{label}] Would #{had_comment ? "fix" : "add"} path comment in #{relative}"
+    report "[#{DRY_RUN ? "dry-run" : "check"}] Would #{gerund} path comment in #{relative}"
     return true
   end
 
   File.write(file_path, new_content, encoding: "utf-8")
-  puts "[#{had_comment ? "FIXED" : "ADDED"}] #{relative}"
+  report "[#{verb}] #{relative}"
   true
 end
 
@@ -343,11 +375,29 @@ def git_ignored(repo_root, files)
   ignored.map { |p| File.expand_path(p, repo_root) }
 end
 
+def config_for(file_path)
+  basename = File.basename(file_path)
+  CONFIGS.each_value do |config|
+    return config if config["extensions"].any? { |ext| File.fnmatch(ext, basename) }
+  end
+  nil
+end
+
 # ── Run ───────────────────────────────────────────────────────────────────────
+if single_file
+  config = config_for(target_dir)
+  if config.nil?
+    warn "Error: unsupported file type: #{target_path}"
+    exit 1
+  end
+  process_file(target_dir, repo_root, config["comment"], custom_exclude_files)
+  exit 0
+end
+
 projects = find_projects(repo_root, custom_projects)
 
 if projects.empty?
-  puts "No recognisable projects found under #{repo_root}"
+  warn "No recognisable projects found under #{repo_root}"
   exit 1
 end
 
@@ -360,7 +410,7 @@ projects.each do |project_root, ptype|
   config = CONFIGS[ptype]
   repo_root_parent = File.dirname(repo_root)
   rel = project_root.sub(/^#{Regexp.escape(repo_root_parent + "/")}/, "")
-  puts "\n── #{rel} (#{ptype}) ──"
+  report "\n── #{rel} (#{ptype}) ──"
 
   files = []
   config["extensions"].each do |ext|
@@ -384,8 +434,13 @@ projects.each do |project_root, ptype|
 end
 
 if CHECK && pending > 0
-  puts ""
-  puts "#{pending} file(s) have a missing or stale path comment."
-  puts "Run add-path-comments without --check to fix them."
+  report ""
+  if REMOVE
+    report "#{pending} file(s) still carry a path comment."
+    report "Run add-path-comments --remove to strip them."
+  else
+    report "#{pending} file(s) have a missing or stale path comment."
+    report "Run add-path-comments without --check to fix them."
+  end
   exit 1
 end
