@@ -65,8 +65,12 @@ MARKERS = {
 
 # ── Command line flags ────────────────────────────────────────────────────────
 DRY_RUN = ARGV.include?("-d") || ARGV.include?("--dry-run")
+CHECK = ARGV.include?("-c") || ARGV.include?("--check")
 HELP = ARGV.include?("-h") || ARGV.include?("--help")
 VERSION_FLAG = ARGV.include?("-v") || ARGV.include?("--version")
+
+# Neither mode writes; --check additionally exits non-zero so CI can gate on it.
+READ_ONLY = DRY_RUN || CHECK
 
 def usage
   puts ""
@@ -76,7 +80,8 @@ def usage
   puts "  add-path-comments [options] [path]"
   puts ""
   puts "Options:"
-  puts "  -d, --dry-run    Show what would be added without modifying files"
+  puts "  -d, --dry-run    Show what would change without modifying files"
+  puts "  -c, --check      Like --dry-run, but exits 1 if anything needs fixing"
   puts "  -v, --version    Print version"
   puts "  -h, --help       Show this help message"
   puts ""
@@ -238,47 +243,104 @@ def expected_comment(file_path, repo_root, comment_char)
   "#{comment_char} #{relative}"
 end
 
+# Is this line a path comment *we* wrote, and therefore ours to rewrite?
+#
+# Deliberately conservative: the payload must be a lone whitespace-free token
+# containing a "/", and must point at either the same basename (the file was
+# moved) or the same extension (the file or repo was renamed). Anything with
+# prose in it belongs to the author and is left alone — a false positive here
+# would delete real source.
+def tool_path_comment?(line, comment_char, file_path)
+  stripped = line.strip
+  return false unless stripped.start_with?("#{comment_char} ")
+
+  payload = stripped[(comment_char.length + 1)..].to_s.strip
+  return false if payload.empty? || payload.include?(" ")
+  return false unless payload.include?("/")
+
+  return true if File.basename(payload) == File.basename(file_path)
+
+  ext = File.extname(file_path)
+  !ext.empty? && File.extname(payload) == ext
+end
+
+# Index one past the leading comment/blank block, which is the only region the
+# tool ever writes into. Scanning further risks eating a path-shaped comment
+# that genuinely belongs to the code below.
+def header_block_end(lines, start_at, comment_char)
+  idx = start_at
+  while idx < lines.length
+    stripped = lines[idx].strip
+    break unless stripped.empty? || stripped.start_with?(comment_char)
+    idx += 1
+  end
+  idx
+end
+
+# Returns true when the file needed a change (whether or not one was written).
 def process_file(file_path, repo_root, comment_char, custom_exclude_files)
   content = File.read(file_path, encoding: "utf-8") rescue nil
-  return unless content
+  return false unless content
 
-  lines = content.split("\n", -1)
   expected = expected_comment(file_path, repo_root, comment_char)
   repo_root_parent = File.dirname(repo_root)
-  parent_name = File.basename(repo_root_parent)
-
-  # Already correct on line 1
-  if lines.any? && lines[0].strip == expected
-    return
-  end
-
-  # Exists somewhere other than line 1
-  lines[1..-1]&.each do |line|
-    stripped = line.strip
-    if stripped == expected || stripped.start_with?("#{comment_char} #{parent_name}/")
-      relative = file_path.sub(/^#{Regexp.escape(repo_root_parent + "/")}/, "")
-      puts "[NOT TOP LINE] #{relative}"
-      return
-    end
-  end
-
   relative = file_path.sub(/^#{Regexp.escape(repo_root_parent + "/")}/, "")
 
-  if DRY_RUN
-    puts "[dry-run] Would add top-line comment to #{relative}"
-    return
-  end
+  lines = content.split("\n", -1)
 
-  # Preserve shebangs
-  if lines.any? && lines[0].start_with?("#!")
-    rest = lines[1..-1] ? lines[1..-1].join("\n") : ""
-    new_content = lines[0] + "\n" + expected + "\n" + rest
-  else
-    new_content = expected + "\n" + content
+  # A shebang must stay on line 1; the path comment goes directly beneath it.
+  insert_at = lines.first.to_s.start_with?("#!") ? 1 : 0
+  block_end = header_block_end(lines, insert_at, comment_char)
+
+  # Drop every path comment already in the header block, then reinstate exactly
+  # one. This is what repairs moved files: the stale comment is removed rather
+  # than left behind under the new one.
+  had_comment = false
+  kept = lines.each_with_index.reject do |line, idx|
+    next false unless idx >= insert_at && idx < block_end
+    next false unless tool_path_comment?(line, comment_char, file_path)
+    had_comment = true
+    true
+  end.map(&:first)
+
+  kept.insert(insert_at, expected)
+  new_content = kept.join("\n")
+
+  return false if new_content == content
+
+  if READ_ONLY
+    label = DRY_RUN ? "dry-run" : "check"
+    puts "[#{label}] Would #{had_comment ? "fix" : "add"} path comment in #{relative}"
+    return true
   end
 
   File.write(file_path, new_content, encoding: "utf-8")
-  puts "[ADDED] #{relative}"
+  puts "[#{had_comment ? "FIXED" : "ADDED"}] #{relative}"
+  true
+end
+
+# ── Gitignore ─────────────────────────────────────────────────────────────────
+# Ask git rather than reimplementing the matching rules — this picks up nested
+# .gitignore files, negations and the global excludes file for free. Build
+# output (out/, storybook-static/, …) is the case that matters: it is full of
+# generated sources the tool would otherwise happily rewrite.
+def git_ignored(repo_root, files)
+  return [] if files.empty?
+  return [] unless File.exist?(File.join(repo_root, ".git"))
+
+  ignored = []
+  begin
+    IO.popen(["git", "-C", repo_root, "check-ignore", "--stdin"], "r+") do |io|
+      io.write(files.join("\n"))
+      io.close_write
+      ignored = io.read.split("\n")
+    end
+  rescue StandardError
+    # No git binary, or not a usable work tree — fall back to the static excludes.
+    return []
+  end
+
+  ignored.map { |p| File.expand_path(p, repo_root) }
 end
 
 # ── Run ───────────────────────────────────────────────────────────────────────
@@ -289,11 +351,16 @@ if projects.empty?
   exit 1
 end
 
+pending = 0
+# A nested marker (e.g. an inner package.json) makes a directory both its own
+# project and part of its parent's, so the same file can be reached twice.
+seen = {}
+
 projects.each do |project_root, ptype|
   config = CONFIGS[ptype]
   repo_root_parent = File.dirname(repo_root)
   rel = project_root.sub(/^#{Regexp.escape(repo_root_parent + "/")}/, "")
-  puts "\n── #{rel} ({ptype}) ──".gsub("{ptype}", ptype)
+  puts "\n── #{rel} (#{ptype}) ──"
 
   files = []
   config["extensions"].each do |ext|
@@ -301,11 +368,24 @@ projects.each do |project_root, ptype|
     files.concat(Dir.glob(glob_pattern, File::FNM_DOTMATCH))
   end
 
-  # Sort files and filter for files only
-  files.uniq.sort.each do |file_path|
-    next unless File.file?(file_path)
-    if should_process?(file_path, config, repo_root, custom_exclude_files)
-      process_file(file_path, repo_root, config["comment"], custom_exclude_files)
-    end
+  candidates = files.uniq.sort.select do |file_path|
+    next false if seen[file_path]
+    next false unless File.file?(file_path)
+    next false unless should_process?(file_path, config, repo_root, custom_exclude_files)
+    seen[file_path] = true
   end
+
+  ignored = git_ignored(repo_root, candidates)
+  candidates -= ignored
+
+  candidates.each do |file_path|
+    pending += 1 if process_file(file_path, repo_root, config["comment"], custom_exclude_files)
+  end
+end
+
+if CHECK && pending > 0
+  puts ""
+  puts "#{pending} file(s) have a missing or stale path comment."
+  puts "Run add-path-comments without --check to fix them."
+  exit 1
 end

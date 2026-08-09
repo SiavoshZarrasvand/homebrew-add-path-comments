@@ -45,16 +45,26 @@ add-path-comments /path/to/my-repo
 
 ### Dry Run (Preview Changes)
 
-See what comments would be added without modifying any files:
+See what would change without modifying any files:
 
 ```bash
 add-path-comments --dry-run
+```
+
+### Check (CI Gate)
+
+Same report as `--dry-run`, but exits `1` if any file has a missing or stale
+path comment. Use it to fail a build when the invariant has drifted:
+
+```bash
+add-path-comments --check || exit 1
 ```
 
 ### Options
 
 ```bash
 add-path-comments -d, --dry-run    # Preview changes without modifying files
+add-path-comments -c, --check      # Preview, and exit 1 if anything needs fixing
 add-path-comments -v, --version    # Print version
 add-path-comments -h, --help       # Show help message
 ```
@@ -64,9 +74,24 @@ add-path-comments -h, --help       # Show help message
 ## Behavior
 
 *   **Preserves Shebangs**: If a file starts with `#!` (like `#!/usr/bin/env python3`), the path comment is inserted on the second line.
-*   **Avoids Duplicates**: If the correct path comment is already on the top line, the file is skipped.
-*   **Reports Misplaced Comments**: If the path comment exists somewhere in the file but not on the top line, it prints `[NOT TOP LINE]` and skips the file to prevent duplicate prepends.
+*   **Repairs Stale Comments**: If a file has moved, the outdated path comment is removed and replaced — never stacked underneath the new one. Comments left over from a repo rename are repaired the same way.
+*   **Collapses Duplicates**: A file that has accumulated several path comments ends up with exactly one, on the top line.
+*   **Relocates Misplaced Comments**: A path comment found lower in the file's leading comment block is moved to the top line rather than skipped.
+*   **Leaves Prose Alone**: Only a lone, whitespace-free path token pointing at the same filename or extension is treated as the tool's own. A comment like `// see lib/other.ts for details` is never touched.
+*   **Respects `.gitignore`**: Files git ignores are never modified, so build output (`out/`, `storybook-static/`, …) stays untouched. Falls back to the static exclude list outside a git work tree.
 *   **Ignores Excluded Directories**: Automatically skips folders like `node_modules`, `dist`, `target`, `.next`, `.venv`, and standard UI components (like `/components/ui/`).
+
+---
+
+## Tests
+
+```bash
+ruby test/test_add_path_comments.rb
+```
+
+Each test builds a throwaway project tree, runs the real script against it, and
+asserts on the resulting file contents. No dependencies beyond the Ruby stdlib —
+the tool must stay installable as a single file.
 
 ---
 
